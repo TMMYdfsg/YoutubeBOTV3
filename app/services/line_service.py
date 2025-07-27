@@ -1,8 +1,8 @@
-# app/services/line_service.py (ボットの司令塔)
+# app/services/line_service.py
 
 import asyncio
 import json
-from typing import List, Optional
+from typing import List
 
 from linebot.v3 import WebhookHandler
 from linebot.v3.messaging import (
@@ -14,8 +14,6 @@ from linebot.v3.messaging import (
     BroadcastRequest,
     ReplyMessageRequest,
 )
-from linebot.v3.webhooks import MessageEvent, TextMessageContent, FollowEvent
-
 from app.core.config import settings
 from app.core.state_manager import bot_state
 
@@ -29,7 +27,8 @@ async_api_client = AsyncApiClient(configuration)
 line_bot_api = AsyncMessagingApi(async_api_client)
 handler = WebhookHandler(settings.LINE_CHANNEL_SECRET)
 
-USER_IDS_FILE = "user_ids.json"
+# Render対応：永続ディスク上のパスを使用
+USER_IDS_FILE = settings.USER_IDS_FILE
 
 
 # --- メッセージ送信 ---

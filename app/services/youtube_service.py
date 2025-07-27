@@ -1,4 +1,4 @@
-# app/services/youtube_service.py (YouTube関連ロジックに専念)
+# app/services/youtube_service.py
 
 import asyncio
 import googleapiclient.discovery
@@ -17,21 +17,25 @@ from app.services.gemini_service import generate_reply, load_persona
 def get_credentials() -> Optional[Credentials]:
     """認証情報を読み込むか、更新する"""
     creds = None
-    if os.path.exists("token.pickle"):
-        with open("token.pickle", "rb") as token:
+    # Render対応：永続ディスク上のパスから読み込む
+    token_path = settings.TOKEN_PICKLE_FILE
+
+    if os.path.exists(token_path):
+        with open(token_path, "rb") as token:
             creds = pickle.load(token)
 
+    # 認証情報が無効な場合はリフレッシュ
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
             try:
                 creds.refresh(Request())
-                with open("token.pickle", "wb") as token:
+                with open(token_path, "wb") as token:
                     pickle.dump(creds, token)
             except Exception as e:
                 print(f"Error refreshing token: {e}")
                 return None
         else:
-            # ここでは認証フローを開始しない。認証は別途行う。
+            print("認証情報が見つからないか、リフレッシュできません。")
             return None
     return creds
 
