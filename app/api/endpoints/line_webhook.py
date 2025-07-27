@@ -1,20 +1,22 @@
+# app/api/endpoints/line_webhook.py
+
 from fastapi import APIRouter, Request, HTTPException
 from linebot.v3.webhooks import MessageEvent, TextMessageContent, FollowEvent
 from linebot.v3.exceptions import InvalidSignatureError
 
+# Core state manager
 from app.core.state_manager import bot_state
-from app.services.gemini_service import load_persona
 
-# line_serviceから司令塔となる関数をインポート
+# Service layer imports
+from app.services.gemini_service import load_persona
 from app.services.line_service import (
     handler,
     reply_message,
     push_message_to_admin,
     start_youtube_bot,
     stop_youtube_bot,
+    save_user_id,
 )
-
-# 手動投稿機能もインポート
 from app.services.youtube_service import post_comment_manual
 
 router = APIRouter()
@@ -22,25 +24,59 @@ router = APIRouter()
 
 @router.post("/callback")
 async def line_webhook(request: Request):
-    signature = request.headers.get("X-Line-Signature")
-    if not signature:
-        raise HTTPException(
-            status_code=400, detail="X-Line-Signature header is required"
+    """LINEからのWebhookリクエストを受け取るエンドポイント"""
+    # ★★★★★ ここが重要 ★★★★★
+    # handlerが正常に初期化されているか最初に確認する
+    if handler is None:
+        print(
+            "[CRITICAL ERROR] LINE Webhook handler is not initialized. Check LINE SDK settings in line_service.py and environment variables."
         )
+        # LINEプラットフォームには正常な応答を返し、エラーの連鎖を防ぐ
+        # 500エラーを返すとLINEはリトライを試みるため、200 OKを返すのが望ましい
+        return "OK"
+
+    signature = request.headers.get("X-Line-Signature")
     body = await request.body()
     try:
+        # line-bot-sdkのハンドラに処理を委譲
         await handler.handle(body.decode(), signature)
     except InvalidSignatureError:
+        # 署名が無効な場合は400エラーを返す
         raise HTTPException(status_code=400, detail="Invalid signature")
+    except Exception as e:
+        # 予期せぬエラーを捕捉し、ログに記録
+        print(f"[ERROR] An exception occurred during handler.handle: {e}")
+        # この場合もLINEには200 OKを返す
+
+    # 処理が正常に完了した場合、LINEに200 OKを返す
     return "OK"
 
 
+# 友だち追加イベントのハンドラ
+@handler.add(FollowEvent)
+async def handle_follow(event: FollowEvent):
+    """友だち追加イベントを処理する"""
+    try:
+        user_id = event.source.user_id
+        save_user_id(user_id)
+        await push_message_to_admin(
+            f"新しい友だちが追加されました！\nユーザーID: {user_id}"
+        )
+    except Exception as e:
+        print(f"Error in follow event handler: {e}")
+
+
+# テキストメッセージイベントのハンドラ
 @handler.add(MessageEvent, message=TextMessageContent)
 async def handle_text_message(event: MessageEvent):
-    """テキストメッセージをコマンドとして処理する"""
-    text = event.message.text.strip()
-
+    """
+    テキストメッセージをコマンドとして処理する。
+    この関数内で発生するすべての例外を捕捉し、LINEには常に200 OKが返されるようにする。
+    """
     try:
+        text = event.message.text.strip()
+
+        # --- コマンド分岐 ---
         if text.lower() == "起動":
             if start_youtube_bot():
                 await reply_message(event.reply_token, "ボットを起動します。")
@@ -91,7 +127,17 @@ async def handle_text_message(event: MessageEvent):
                 )
 
     except Exception as e:
-        print(f"Error handling text message: {e}")
-        await reply_message(
-            event.reply_token, f"コマンド処理中にエラーが発生しました: {e}"
+        # ★★★★★ ここが重要 ★★★★★
+        # 処理中にどんなエラーが発生しても、ここで捕捉する。
+        # これにより、サーバーが500エラーを返すのを防ぎ、LINEプラットフォームとの通信を維持する。
+        print(
+            f"[CRITICAL ERROR] An unhandled exception occurred in handle_text_message: {e}"
         )
+
+        # 管理者にエラーを通知する
+        try:
+            await push_message_to_admin(
+                f"重大なエラーが発生しました。サーバーログを確認してください。\n\nエラータイプ: {type(e).__name__}\nエラー内容: {e}"
+            )
+        except Exception as push_e:
+            print(f"Failed to send critical error notification: {push_e}")
