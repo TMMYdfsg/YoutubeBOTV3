@@ -7,4 +7,5 @@ google-generativeai
 line-bot-sdk
 pyyaml
 httpx
-redis
+supabase
+gotrue

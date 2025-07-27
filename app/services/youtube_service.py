@@ -1,52 +1,57 @@
 # app/services/youtube_service.py
-
 import asyncio
 import googleapiclient.discovery
 from google.oauth2.credentials import Credentials
 from google.auth.transport.requests import Request
 import os
-import redis
 import json
+from supabase import create_client, Client
 from typing import Callable, Optional
 
 from app.core.config import settings
 from app.core.state_manager import bot_state
 from app.services.gemini_service import generate_reply, load_persona
 
-# Redisクライアントの初期化
+# Supabaseクライアントの初期化
 try:
-    redis_client = redis.from_url(settings.REDIS_URL, decode_responses=True)
-    REDIS_TOKEN_KEY = "youtube_token_json"
+    supabase: Client = create_client(settings.SUPABASE_URL, settings.SUPABASE_KEY)
+    print("Supabaseクライアントの初期化に成功しました。")
 except Exception as e:
-    redis_client = None
+    print(f"Supabaseクライアントの初期化に失敗しました: {e}")
+    supabase = None
 
 
-# --- 認証関連 ---
 def get_credentials() -> Optional[Credentials]:
-    """認証情報をRedisから読み込むか、更新する"""
-    if not redis_client:
-        print("Redisが利用できません。認証処理をスキップします。")
+    """認証情報をSupabaseから読み込むか、更新する"""
+    if not supabase:
         return None
-
     creds = None
-    token_json_str = redis_client.get(REDIS_TOKEN_KEY)
 
-    if token_json_str:
-        creds = Credentials.from_authorized_user_info(
-            json.loads(token_json_str), settings.YOUTUBE_OAUTH_SCOPES
+    try:
+        response = (
+            supabase.table("youtube_tokens")
+            .select("token_data")
+            .eq("service_name", "youtube")
+            .execute()
         )
+        if response.data:
+            token_data = response.data[0]["token_data"]
+            creds = Credentials.from_authorized_user_info(
+                token_data, settings.YOUTUBE_OAUTH_SCOPES
+            )
 
-    if not creds or not creds.valid:
-        if creds and creds.expired and creds.refresh_token:
-            try:
+        if not creds or not creds.valid:
+            if creds and creds.expired and creds.refresh_token:
                 creds.refresh(Request())
-                redis_client.set(REDIS_TOKEN_KEY, creds.to_json())
-            except Exception as e:
-                print(f"トークンのリフレッシュ中にエラーが発生しました: {e}")
+                supabase.table("youtube_tokens").update(
+                    {"token_data": json.loads(creds.to_json())}
+                ).eq("service_name", "youtube").execute()
+            else:
                 return None
-        else:
-            return None
-    return creds
+        return creds
+    except Exception as e:
+        print(f"Supabaseからの認証情報取得/更新に失敗: {e}")
+        return None
 
 
 def get_youtube_client(credentials: Credentials):
@@ -65,12 +70,10 @@ def get_youtube_client_readonly():
     )
 
 
-# --- ボットのコアロジック ---
 async def run_bot_cycle(notifier: Callable[[str], asyncio.Task]):
     """ボットのメイン処理ループ"""
     await notifier("ボットのメインループを開始します。")
 
-    # ライブ配信を検索
     youtube_readonly = get_youtube_client_readonly()
     live_chat_id = None
     try:
@@ -107,7 +110,6 @@ async def run_bot_cycle(notifier: Callable[[str], asyncio.Task]):
         bot_state.stop_bot()
         return
 
-    # 認証情報を取得して書き込み用クライアントを作成
     creds = get_credentials()
     if not creds:
         await notifier(
@@ -117,7 +119,6 @@ async def run_bot_cycle(notifier: Callable[[str], asyncio.Task]):
         return
     youtube_write = get_youtube_client(creds)
 
-    # 起動時の挨拶
     try:
         persona_data = load_persona(bot_state.current_persona)
         greeting = persona_data.get(
@@ -128,7 +129,6 @@ async def run_bot_cycle(notifier: Callable[[str], asyncio.Task]):
     except Exception as e:
         await notifier(f"挨拶コメントの投稿に失敗しました: {e}")
 
-    # チャットポーリングループ
     next_page_token = None
     while bot_state.is_running:
         try:
@@ -142,7 +142,6 @@ async def run_bot_cycle(notifier: Callable[[str], asyncio.Task]):
                 pageToken=next_page_token,
             )
             chat_response = chat_request.execute()
-
             new_messages = chat_response.get("items", [])
             next_page_token = chat_response.get("nextPageToken")
             polling_interval = chat_response.get("pollingIntervalMillis", 15000) / 1000
@@ -150,11 +149,11 @@ async def run_bot_cycle(notifier: Callable[[str], asyncio.Task]):
             chat_history_for_gemini = ""
             for item in new_messages:
                 comment_id = item["id"]
-                author_name = item["authorDetails"]["displayName"]
-                message_text = item["snippet"]["displayMessage"]
-
                 if comment_id in bot_state.comment_history:
                     continue
+
+                author_name = item["authorDetails"]["displayName"]
+                message_text = item["snippet"]["displayMessage"]
 
                 if item["authorDetails"]["isChatOwner"]:
                     bot_state.comment_history.add(comment_id)
@@ -169,19 +168,15 @@ async def run_bot_cycle(notifier: Callable[[str], asyncio.Task]):
                 system_instruction = persona_data.get(
                     "system_instruction", "You are a helpful assistant."
                 )
-
-                # ★ 修正点: `gemini_service.` を削除し、直接関数を呼び出す
                 ai_reply = await generate_reply(
                     chat_history_for_gemini, system_instruction
                 )
-
                 if ai_reply and ai_reply.strip():
                     await asyncio.sleep(2)
                     await post_comment(youtube_write, live_chat_id, ai_reply)
                     await notifier(f"[AI {bot_state.current_persona}]: {ai_reply}")
 
             await asyncio.sleep(polling_interval)
-
         except asyncio.CancelledError:
             await notifier("ボットのタスクがキャンセルされました。")
             break
@@ -191,10 +186,8 @@ async def run_bot_cycle(notifier: Callable[[str], asyncio.Task]):
 
 
 async def post_comment(youtube_client, live_chat_id: str, text: str):
-    """コメントを投稿する"""
     if not text.strip():
         return
-    # 非同期処理内で同期的なAPI呼び出しを行うため、asyncio.to_threadを使用
     loop = asyncio.get_running_loop()
     await loop.run_in_executor(
         None,
@@ -214,14 +207,11 @@ async def post_comment(youtube_client, live_chat_id: str, text: str):
 
 
 async def post_comment_manual(text: str) -> bool:
-    """手動でコメントを投稿するための関数"""
     if not bot_state.is_running or not bot_state.youtube_live_chat_id:
         return False
-
     creds = get_credentials()
     if not creds:
         return False
-
     try:
         youtube_write = get_youtube_client(creds)
         await post_comment(youtube_write, bot_state.youtube_live_chat_id, text)
