@@ -1,0 +1,24 @@
+# .gitignore
+
+# Python
+__pycache__/
+*.pyc
+
+# Virtual Environment
+new_venv/
+venv/
+
+# IDE / Editor
+.vscode/
+.idea/
+
+# Secret files
+.env
+token.pickle
+token.json
+user_ids.json
+client_secret.json
+google-credentials.json
+
+# OS
+.DS_Store

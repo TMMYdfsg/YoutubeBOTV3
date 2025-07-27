@@ -1,0 +1,9 @@
+fastapi
+uvicorn[standard]
+pydantic-settings
+google-api-python-client
+google-auth-oauthlib
+google-generativeai
+line-bot-sdk
+pyyaml
+httpx
