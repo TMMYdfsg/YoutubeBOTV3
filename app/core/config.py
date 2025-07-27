@@ -1,6 +1,8 @@
 # app/core/config.py
 
 from pydantic_settings import BaseSettings
+
+# ★ 修正: `Optional` と `List` を `typing` からインポート
 from typing import List, Optional
 
 
@@ -21,8 +23,10 @@ class Settings(BaseSettings):
     BASE_URL: str
 
     # --- Render対応：RedisとSecret Filesから設定を読み込む ---
-    REDIS_URL: str  # Renderが自動で提供
-    YOUTUBE_TOKEN_JSON_INITIAL: Optional[str] = None  # 初回設定用のtoken.jsonの内容
+    # ★ 修正点: REDIS_URLをOptional[str] = Noneとすることで、
+    # .envファイルに記載がなくてもエラーにならないようにします。
+    REDIS_URL: Optional[str] = None
+    YOUTUBE_TOKEN_JSON_INITIAL: Optional[str] = None
 
     # --- 定数 ---
     YOUTUBE_API_SERVICE_NAME: str = "youtube"
