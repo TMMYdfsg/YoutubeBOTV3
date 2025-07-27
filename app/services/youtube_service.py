@@ -15,27 +15,31 @@ from app.services.gemini_service import generate_reply, load_persona
 
 # --- 認証関連 ---
 def get_credentials() -> Optional[Credentials]:
-    """認証情報を読み込むか、更新する"""
+    """認証情報を読み込むか、更新する (token.json 対応版)"""
     creds = None
-    # Render対応：永続ディスク上のパスから読み込む
-    token_path = settings.TOKEN_PICKLE_FILE
+    token_path = settings.TOKEN_JSON_FILE
 
     if os.path.exists(token_path):
-        with open(token_path, "rb") as token:
-            creds = pickle.load(token)
+        # JSONファイルから認証情報を直接ロード
+        creds = Credentials.from_authorized_user_file(
+            token_path, settings.YOUTUBE_OAUTH_SCOPES
+        )
 
     # 認証情報が無効な場合はリフレッシュ
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
             try:
                 creds.refresh(Request())
-                with open(token_path, "wb") as token:
-                    pickle.dump(creds, token)
+                # 更新された認証情報をJSON形式で保存
+                with open(token_path, "w") as token:
+                    token.write(creds.to_json())
             except Exception as e:
                 print(f"Error refreshing token: {e}")
                 return None
         else:
-            print("認証情報が見つからないか、リフレッシュできません。")
+            print(
+                "有効な認証情報(token.json)が見つかりません。LINEから認証フローを開始してください。"
+            )
             return None
     return creds
 

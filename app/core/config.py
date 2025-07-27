@@ -23,18 +23,21 @@ class Settings(BaseSettings):
     # --- Render対応：ファイル内容を環境変数から受け取る ---
     GOOGLE_CREDENTIALS_JSON: Optional[str] = None
     CLIENT_SECRET_JSON: Optional[str] = None
-    YOUTUBE_TOKEN_BASE64: Optional[str] = None
+    YOUTUBE_TOKEN_JSON: Optional[str] = None
 
     # --- 定数 ---
     YOUTUBE_API_SERVICE_NAME: str = "youtube"
     YOUTUBE_API_VERSION: str = "v3"
+    YOUTUBE_OAUTH_SCOPES: List[str] = [
+        "https://www.googleapis.com/auth/youtube.force-ssl"
+    ]
 
     # Render対応：ファイルパスを永続ディスクのパスに変更
     DATA_DIR: str = "/app/data"
     GOOGLE_CREDENTIALS_FILE: str = f"{DATA_DIR}/google-credentials.json"
     CLIENT_SECRET_FILE: str = f"{DATA_DIR}/client_secret.json"
     USER_IDS_FILE: str = f"{DATA_DIR}/user_ids.json"
-    TOKEN_PICKLE_FILE: str = f"{DATA_DIR}/token.pickle"
+    TOKEN_JSON_FILE: str = f"{DATA_DIR}/token.json"
 
     class Config:
         env_file = ".env"

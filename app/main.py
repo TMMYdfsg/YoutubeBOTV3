@@ -2,14 +2,14 @@
 
 import os
 import base64
-from fastapi import FastAPI, Request, HTTPException
+from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 
 from app.api.endpoints import line_webhook
 from app.core.config import settings
 
 # --- Render対応：永続データディレクトリの定義 ---
-DATA_DIR = "/app/data"
+DATA_DIR = settings.DATA_DIR
 
 app = FastAPI(
     title="YouTube Live Comment Bot",
@@ -35,28 +35,23 @@ def startup_event():
     files_to_write = {
         "google-credentials.json": settings.GOOGLE_CREDENTIALS_JSON,
         "client_secret.json": settings.CLIENT_SECRET_JSON,
+        "token.json": settings.YOUTUBE_TOKEN_JSON,
     }
 
     for filename, content in files_to_write.items():
         filepath = os.path.join(DATA_DIR, filename)
         if content:
-            print(f"環境変数から '{filename}' を書き出します。")
-            with open(filepath, "w", encoding="utf-8") as f:
-                f.write(content)
+            # ファイルが既に存在する場合は上書きしない（初回起動時のみ書き出す）
+            if not os.path.exists(filepath):
+                print(f"環境変数から '{filename}' を書き出します。")
+                with open(filepath, "w", encoding="utf-8") as f:
+                    f.write(content)
         else:
-            print(
-                f"警告: 環境変数 '{filename.upper().replace('-', '_')}' が設定されていません。"
-            )
-
-    # Base64エンコードされたtoken.pickleをデコードして書き出す
-    token_filepath = os.path.join(DATA_DIR, "token.pickle")
-    if settings.YOUTUBE_TOKEN_BASE64:
-        print("環境変数から 'token.pickle' をデコードして書き出します。")
-        decoded_token = base64.b64decode(settings.YOUTUBE_TOKEN_BASE64)
-        with open(token_filepath, "wb") as f:
-            f.write(decoded_token)
-    else:
-        print("警告: 環境変数 'YOUTUBE_TOKEN_BASE64' が設定されていません。")
+            # 必須ではないファイルについては警告レベルを下げる
+            if filename not in ["token.json"]:
+                print(
+                    f"警告: 環境変数 '{filename.upper().replace('-', '_').replace('.', '_')}' が設定されていません。"
+                )
 
     print("起動時処理が完了しました。")
 
