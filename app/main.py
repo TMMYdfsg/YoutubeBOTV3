@@ -1,65 +1,53 @@
 # app/main.py
 
 import os
-import base64
+import redis
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 
 from app.api.endpoints import line_webhook
 from app.core.config import settings
 
-# --- Render対応：永続データディレクトリの定義 ---
-DATA_DIR = settings.DATA_DIR
-
 app = FastAPI(
     title="YouTube Live Comment Bot",
     description="A bot that automatically replies to YouTube Live comments using Gemini and is managed via LINE.",
-    version="1.0.0",
+    version="1.1.0-redis",
 )
 
 
 @app.on_event("startup")
 def startup_event():
     """
-    アプリケーション起動時に実行されるイベント
-    Renderの永続ディスクに必要な認証ファイルを書き出す
+    アプリケーション起動時に実行されるイベント。
+    Renderデプロイ時にRedisへ初回トークンを設定します。
     """
     print("アプリケーションが起動しました。")
 
-    # 永続データディレクトリが存在しない場合は作成
-    if not os.path.exists(DATA_DIR):
-        print(f"データディレクトリ '{DATA_DIR}' を作成します。")
-        os.makedirs(DATA_DIR)
+    # --- Redisへの初回トークン設定 ---
+    try:
+        # 環境変数からRedisのURLを取得して接続
+        redis_client = redis.from_url(settings.REDIS_URL, decode_responses=True)
+        token_key = "youtube_token_json"
 
-    # 環境変数から認証情報を読み込み、ファイルとして書き出す
-    files_to_write = {
-        "google-credentials.json": settings.GOOGLE_CREDENTIALS_JSON,
-        "client_secret.json": settings.CLIENT_SECRET_JSON,
-        "token.json": settings.YOUTUBE_TOKEN_JSON,
-    }
+        # Redisにトークンが存在せず、かつ環境変数に初期トークンが設定されている場合のみ書き込む
+        if not redis_client.exists(token_key) and settings.YOUTUBE_TOKEN_JSON_INITIAL:
+            print("Redisに初期トークンを設定します...")
+            redis_client.set(token_key, settings.YOUTUBE_TOKEN_JSON_INITIAL)
+            print("初期トークンの設定が完了しました。")
 
-    for filename, content in files_to_write.items():
-        filepath = os.path.join(DATA_DIR, filename)
-        if content:
-            # ファイルが既に存在する場合は上書きしない（初回起動時のみ書き出す）
-            if not os.path.exists(filepath):
-                print(f"環境変数から '{filename}' を書き出します。")
-                with open(filepath, "w", encoding="utf-8") as f:
-                    f.write(content)
-        else:
-            # 必須ではないファイルについては警告レベルを下げる
-            if filename not in ["token.json"]:
-                print(
-                    f"警告: 環境変数 '{filename.upper().replace('-', '_').replace('.', '_')}' が設定されていません。"
-                )
+    except Exception as e:
+        # Redisへの接続失敗は、ローカル環境では想定内のため、エラーログのみ表示
+        print(f"Redisの初期設定中にエラーが発生しました: {e}")
 
     print("起動時処理が完了しました。")
 
 
+# LINEからのWebhookを受け取るルーターを登録
 app.include_router(line_webhook.router, prefix="/api/v1/line", tags=["line"])
 
 
 @app.get("/", tags=["Root"])
 async def read_root():
     """サーバーの稼働状況を確認するためのエンドポイント"""
+    # 正常なJSONレスポンスを返すように修正
     return JSONResponse(content={"status": "YouTube Bot is running"})

@@ -5,46 +5,50 @@ import googleapiclient.discovery
 from google.oauth2.credentials import Credentials
 from google.auth.transport.requests import Request
 import os
-import pickle
+import redis
+import json
 from typing import Callable, Optional
 
 from app.core.config import settings
 from app.core.state_manager import bot_state
 from app.services.gemini_service import generate_reply, load_persona
 
+# Redisクライアントの初期化
+try:
+    redis_client = redis.from_url(settings.REDIS_URL, decode_responses=True)
+    REDIS_TOKEN_KEY = "youtube_token_json"
+except Exception as e:
+    redis_client = None
+
 
 # --- 認証関連 ---
 def get_credentials() -> Optional[Credentials]:
-    """認証情報を読み込むか、更新する (token.json 対応版)"""
-    creds = None
-    token_path = settings.TOKEN_JSON_FILE
+    """認証情報をRedisから読み込むか、更新する"""
+    if not redis_client:
+        print("Redisが利用できません。認証処理をスキップします。")
+        return None
 
-    if os.path.exists(token_path):
-        # JSONファイルから認証情報を直接ロード
-        creds = Credentials.from_authorized_user_file(
-            token_path, settings.YOUTUBE_OAUTH_SCOPES
+    creds = None
+    token_json_str = redis_client.get(REDIS_TOKEN_KEY)
+
+    if token_json_str:
+        creds = Credentials.from_authorized_user_info(
+            json.loads(token_json_str), settings.YOUTUBE_OAUTH_SCOPES
         )
 
-    # 認証情報が無効な場合はリフレッシュ
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
             try:
                 creds.refresh(Request())
-                # 更新された認証情報をJSON形式で保存
-                with open(token_path, "w") as token:
-                    token.write(creds.to_json())
+                redis_client.set(REDIS_TOKEN_KEY, creds.to_json())
             except Exception as e:
-                print(f"Error refreshing token: {e}")
+                print(f"トークンのリフレッシュ中にエラーが発生しました: {e}")
                 return None
         else:
-            print(
-                "有効な認証情報(token.json)が見つかりません。LINEから認証フローを開始してください。"
-            )
             return None
     return creds
 
 
-# --- APIクライアント作成 ---
 def get_youtube_client(credentials: Credentials):
     return googleapiclient.discovery.build(
         settings.YOUTUBE_API_SERVICE_NAME,
@@ -64,14 +68,11 @@ def get_youtube_client_readonly():
 # --- ボットのコアロジック ---
 async def run_bot_cycle(notifier: Callable[[str], asyncio.Task]):
     """ボットのメイン処理ループ"""
-    await notifier(
-        f"ボットのメインループを開始します。チャンネルID: {settings.TARGET_YOUTUBE_CHANNEL_ID}"
-    )
-
-    youtube_readonly = get_youtube_client_readonly()
-    live_chat_id = None
+    await notifier("ボットのメインループを開始します。")
 
     # ライブ配信を検索
+    youtube_readonly = get_youtube_client_readonly()
+    live_chat_id = None
     try:
         search_request = youtube_readonly.search().list(
             part="snippet",
@@ -82,7 +83,10 @@ async def run_bot_cycle(notifier: Callable[[str], asyncio.Task]):
         search_response = search_request.execute()
 
         if not search_response.get("items"):
-            await notifier("現在、ライブ配信は見つかりませんでした。")
+            await notifier(
+                "現在、ライブ配信は見つかりませんでした。5分後に再試行します。"
+            )
+            await asyncio.sleep(300)
             bot_state.stop_bot()
             return
 
@@ -96,7 +100,7 @@ async def run_bot_cycle(notifier: Callable[[str], asyncio.Task]):
             "activeLiveChatId"
         ]
         bot_state.youtube_live_chat_id = live_chat_id
-        await notifier(f"ライブ配信を検知しました！ チャットID: {live_chat_id}")
+        await notifier(f"ライブ配信を発見しました！ Chat ID: {live_chat_id}")
 
     except Exception as e:
         await notifier(f"ライブ配信の検索中にエラーが発生しました: {e}")
@@ -107,88 +111,106 @@ async def run_bot_cycle(notifier: Callable[[str], asyncio.Task]):
     creds = get_credentials()
     if not creds:
         await notifier(
-            "YouTubeの認証情報(token.pickle)が見つからないか無効です。コメント投稿はできません。"
+            "YouTubeの認証情報が見つからないか無効です。コメント投稿はできません。"
         )
         bot_state.stop_bot()
         return
     youtube_write = get_youtube_client(creds)
 
-    # 最初の挨拶を投稿
+    # 起動時の挨拶
     try:
         persona_data = load_persona(bot_state.current_persona)
-        greeting = persona_data.get("greetings", "皆さん、こんにちは！AIボットです。")
+        greeting = persona_data.get(
+            "greetings", "こんにちは！AIアシスタントが配信のサポートを開始します！"
+        )
         await post_comment(youtube_write, live_chat_id, greeting)
+        await notifier(f"挨拶コメントを投稿しました: {greeting}")
     except Exception as e:
         await notifier(f"挨拶コメントの投稿に失敗しました: {e}")
 
     # チャットポーリングループ
-    last_published_at = None
+    next_page_token = None
     while bot_state.is_running:
         try:
+            async with bot_state.lock:
+                if not bot_state.is_running:
+                    break
+
             chat_request = youtube_readonly.liveChatMessages().list(
-                liveChatId=live_chat_id, part="snippet,authorDetails"
+                liveChatId=live_chat_id,
+                part="snippet,authorDetails",
+                pageToken=next_page_token,
             )
             chat_response = chat_request.execute()
 
-            chat_history_for_gemini = ""
             new_messages = chat_response.get("items", [])
+            next_page_token = chat_response.get("nextPageToken")
+            polling_interval = chat_response.get("pollingIntervalMillis", 15000) / 1000
 
+            chat_history_for_gemini = ""
             for item in new_messages:
                 comment_id = item["id"]
-                author = item["authorDetails"]["displayName"]
-                message = item["snippet"]["displayMessage"]
+                author_name = item["authorDetails"]["displayName"]
+                message_text = item["snippet"]["displayMessage"]
 
-                # 処理済みのコメントはスキップ
                 if comment_id in bot_state.comment_history:
                     continue
 
-                bot_state.comment_history.add(comment_id)
-                await notifier(f"[{author}]: {message}")
-                chat_history_for_gemini += f"{author}: {message}\n"
+                if item["authorDetails"]["isChatOwner"]:
+                    bot_state.comment_history.add(comment_id)
+                    continue
 
-            # 新しいメッセージがあればAIに返信を依頼
+                await notifier(f"[{author_name}]: {message_text}")
+                bot_state.comment_history.add(comment_id)
+                chat_history_for_gemini += f"{author_name}: {message_text}\n"
+
             if chat_history_for_gemini:
                 persona_data = load_persona(bot_state.current_persona)
                 system_instruction = persona_data.get(
                     "system_instruction", "You are a helpful assistant."
                 )
 
+                # ★ 修正点: `gemini_service.` を削除し、直接関数を呼び出す
                 ai_reply = await generate_reply(
                     chat_history_for_gemini, system_instruction
                 )
 
-                if ai_reply:
+                if ai_reply and ai_reply.strip():
+                    await asyncio.sleep(2)
                     await post_comment(youtube_write, live_chat_id, ai_reply)
                     await notifier(f"[AI {bot_state.current_persona}]: {ai_reply}")
-                    bot_state.comment_history.add(
-                        f"ai_reply_{comment_id}"
-                    )  # AIの返信も履歴に追加
 
-            await asyncio.sleep(15)  # APIクォータを考慮して15秒待機
+            await asyncio.sleep(polling_interval)
 
         except asyncio.CancelledError:
             await notifier("ボットのタスクがキャンセルされました。")
             break
         except Exception as e:
             await notifier(f"チャットループでエラーが発生しました: {e}")
-            await asyncio.sleep(60)  # エラー時は長めに待つ
+            await asyncio.sleep(60)
 
 
 async def post_comment(youtube_client, live_chat_id: str, text: str):
     """コメントを投稿する"""
     if not text.strip():
         return
-    request = youtube_client.liveChatMessages().insert(
-        part="snippet",
-        body={
-            "snippet": {
-                "liveChatId": live_chat_id,
-                "type": "textMessageEvent",
-                "textMessageDetails": {"messageText": text},
-            }
-        },
+    # 非同期処理内で同期的なAPI呼び出しを行うため、asyncio.to_threadを使用
+    loop = asyncio.get_running_loop()
+    await loop.run_in_executor(
+        None,
+        lambda: youtube_client.liveChatMessages()
+        .insert(
+            part="snippet",
+            body={
+                "snippet": {
+                    "liveChatId": live_chat_id,
+                    "type": "textMessageEvent",
+                    "textMessageDetails": {"messageText": text},
+                }
+            },
+        )
+        .execute(),
     )
-    request.execute()
 
 
 async def post_comment_manual(text: str) -> bool:

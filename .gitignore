@@ -14,7 +14,6 @@ venv/
 
 # Secret files
 .env
-token.pickle
 token.json
 user_ids.json
 client_secret.json

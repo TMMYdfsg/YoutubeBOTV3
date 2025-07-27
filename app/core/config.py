@@ -20,10 +20,9 @@ class Settings(BaseSettings):
     # --- Application ---
     BASE_URL: str
 
-    # --- Render対応：ファイル内容を環境変数から受け取る ---
-    GOOGLE_CREDENTIALS_JSON: Optional[str] = None
-    CLIENT_SECRET_JSON: Optional[str] = None
-    YOUTUBE_TOKEN_JSON: Optional[str] = None
+    # --- Render対応：RedisとSecret Filesから設定を読み込む ---
+    REDIS_URL: str  # Renderが自動で提供
+    YOUTUBE_TOKEN_JSON_INITIAL: Optional[str] = None  # 初回設定用のtoken.jsonの内容
 
     # --- 定数 ---
     YOUTUBE_API_SERVICE_NAME: str = "youtube"
@@ -32,12 +31,9 @@ class Settings(BaseSettings):
         "https://www.googleapis.com/auth/youtube.force-ssl"
     ]
 
-    # Render対応：ファイルパスを永続ディスクのパスに変更
-    DATA_DIR: str = "/app/data"
-    GOOGLE_CREDENTIALS_FILE: str = f"{DATA_DIR}/google-credentials.json"
-    CLIENT_SECRET_FILE: str = f"{DATA_DIR}/client_secret.json"
-    USER_IDS_FILE: str = f"{DATA_DIR}/user_ids.json"
-    TOKEN_JSON_FILE: str = f"{DATA_DIR}/token.json"
+    # Secret Filesのパス (Render環境でのみ有効)
+    SECRET_DIR: str = "/etc/secrets"
+    CLIENT_SECRET_FILE: str = f"{SECRET_DIR}/client_secret.json"
 
     class Config:
         env_file = ".env"
