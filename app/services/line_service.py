@@ -1,6 +1,10 @@
 # app/services/line_service.py
+
 import asyncio
+import json
 from typing import List
+
+# --- サードパーティライブラリのインポート ---
 from supabase import create_client, Client
 from linebot.v3 import WebhookHandler
 from linebot.v3.messaging import (
@@ -12,15 +16,20 @@ from linebot.v3.messaging import (
     ReplyMessageRequest,
 )
 
+# --- アプリケーション内モジュールのインポート ---
 from app.core.config import settings
 from app.core.state_manager import bot_state
 from app.services.gemini_service import load_persona
 from app.services.youtube_service import run_bot_cycle, post_comment_manual
 
+# --- 初期化セクション ---
+
 # Supabaseクライアントの初期化
 try:
     supabase: Client = create_client(settings.SUPABASE_URL, settings.SUPABASE_KEY)
+    print("Supabaseクライアントの初期化に成功しました。")
 except Exception as e:
+    print(f"Supabaseクライアントの初期化に失敗しました: {e}")
     supabase = None
 
 # LINE SDKの初期化
@@ -28,10 +37,17 @@ try:
     configuration = Configuration(access_token=settings.LINE_CHANNEL_ACCESS_TOKEN)
     async_api_client = AsyncApiClient(configuration)
     line_bot_api = AsyncMessagingApi(async_api_client)
-    handler = WebhookHandler(settings.LINE_CHANNEL_SECRET)
+    # ★★★★★ ここが重要 ★★★★★
+    # WebhookHandlerを非同期モードで初期化する
+    handler = WebhookHandler(settings.LINE_CHANNEL_SECRET, async_mode=True)
+    print("LINE SDKの初期化に成功しました。")
 except Exception as e:
+    print(f"LINE SDKの初期化中にエラーが発生しました: {e}")
     line_bot_api = None
     handler = None
+
+
+# --- ユーザーID管理 (Supabase対応) ---
 
 
 def get_all_user_ids() -> List[str]:
@@ -63,8 +79,15 @@ def save_user_id(user_id: str):
         print(f"SupabaseへのユーザーID保存に失敗: {e}")
 
 
+# --- メッセージ送信 ---
+
+
 async def push_message_to_admin(text: str):
+    """管理者（ログ監視者）にプッシュメッセージを送信する"""
     if not line_bot_api:
+        print(
+            "LINE SDKが初期化されていないため、管理者へのプッシュメッセージを送信できません。"
+        )
         return
     try:
         await line_bot_api.push_message(
@@ -77,7 +100,9 @@ async def push_message_to_admin(text: str):
 
 
 async def reply_message(reply_token: str, text: str):
+    """コマンド送信者に返信する"""
     if not line_bot_api:
+        print("LINE SDKが初期化されていないため、リプライメッセージを送信できません。")
         return
     try:
         await line_bot_api.reply_message(
@@ -89,7 +114,11 @@ async def reply_message(reply_token: str, text: str):
         print(f"Error replying message: {e}")
 
 
+# --- ボット制御 ---
+
+
 def start_youtube_bot():
+    """YouTubeボットのバックグラウンドタスクを開始する"""
     if bot_state.is_running:
         return False
     task = asyncio.create_task(run_bot_cycle(notifier=push_message_to_admin))
@@ -98,6 +127,7 @@ def start_youtube_bot():
 
 
 async def stop_youtube_bot():
+    """YouTubeボットのタスクを停止する"""
     if not bot_state.is_running:
         return False
     try:
