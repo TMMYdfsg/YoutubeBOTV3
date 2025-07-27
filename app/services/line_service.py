@@ -38,8 +38,8 @@ try:
     async_api_client = AsyncApiClient(configuration)
     line_bot_api = AsyncMessagingApi(async_api_client)
     # ★★★★★ ここが重要 ★★★★★
-    # WebhookHandlerを非同期モードで初期化する
-    handler = WebhookHandler(settings.LINE_CHANNEL_SECRET, async_mode=True)
+    # WebhookHandlerの初期化から async_mode=True を削除
+    handler = WebhookHandler(settings.LINE_CHANNEL_SECRET)
     print("LINE SDKの初期化に成功しました。")
 except Exception as e:
     print(f"LINE SDKの初期化中にエラーが発生しました: {e}")
